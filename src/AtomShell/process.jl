@@ -71,15 +71,40 @@ end
 
 port() = rand(2_000:10_000)
 
-function try_connect(args...; interval = 0.01, attempts = 500)
-  for i = 1:attempts
-    try
-      return connect(args...)
-    catch e
-      i == attempts && rethrow()
-    end
-    sleep(interval)
+"""
+    electron_flags()
+
+Extra command-line flags to launch the Electron process with.
+"""
+function electron_flags()
+  flags = String[]
+  if Sys.islinux() && isempty(get(ENV, "DISPLAY", "")) && !isempty(get(ENV, "WAYLAND_DISPLAY", ""))
+    append!(flags, ["--enable-features=UseOzonePlatform", "--ozone-platform=wayland"])
   end
+  append!(flags, split(get(ENV, "BLINK_ELECTRON_ARGS", "")))
+  return flags
+end
+
+function try_connect(proc, args...; interval=0.01, attempts=500)
+    for i = 1:attempts
+        if !process_running(proc)
+            how = if proc.termsignal != 0
+                "was killed by signal $(proc.termsignal)"
+            else
+                "exited with code $(proc.exitcode)"
+            end
+            error("The Electron process $how before Blink could connect to it. " *
+                  "Run `Blink.AtomShell.init(debug = true)` to see its output.")
+        end
+
+        try
+            return connect(args...)
+        catch e
+            i == attempts && rethrow()
+        end
+
+        sleep(interval)
+    end
 end
 
 function init(; debug = false)
@@ -87,8 +112,8 @@ function init(; debug = false)
   p, dp = port(), port()
   debug && inspector(dp)
   dbg = debug ? "--debug=$dp" : []
-  proc = (debug ? run_rdr : run)(`$(electron()) $dbg $mainjs port $p`; wait=false)
-  conn = try_connect(ip"127.0.0.1", p)
+  proc = (debug ? run_rdr : run)(`$(electron()) $(electron_flags()) $dbg $mainjs port $p`; wait=false)
+  conn = try_connect(proc, ip"127.0.0.1", p)
   shell = Electron(proc, conn)
   initcbs(shell)
   return shell
